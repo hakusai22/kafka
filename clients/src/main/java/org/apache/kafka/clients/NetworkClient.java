@@ -84,7 +84,7 @@ public class NetworkClient implements KafkaClient {
 
     private final Logger log;
 
-    /* the selector used to perform network i/o */
+    /* 用于执行网络I/O操作的选择器 */
     private final Selectable selector;
 
     private final MetadataUpdater metadataUpdater;
@@ -533,9 +533,10 @@ public class NetworkClient implements KafkaClient {
     }
 
     /**
-     * Queue up the given request for sending. Requests can only be sent out to ready nodes.
-     * @param request The request
-     * @param now The current timestamp
+     * 将给定的请求加入发送队列。请求只能发送到就绪状态的节点。
+     * 
+     * @param request 要发送的请求
+     * @param now 当前时间戳
      */
     @Override
     public void send(ClientRequest request, long now) {
@@ -549,25 +550,25 @@ public class NetworkClient implements KafkaClient {
     }
 
     private void doSend(ClientRequest clientRequest, boolean isInternalRequest, long now) {
+        // 确保客户端处于活跃状态
         ensureActive();
         String nodeId = clientRequest.destination();
         if (!isInternalRequest) {
-            // If this request came from outside the NetworkClient, validate
-            // that we can send data.  If the request is internal, we trust
-            // that internal code has done this validation.  Validation
-            // will be slightly different for some internal requests (for
-            // example, ApiVersionsRequests can be sent prior to being in
-            // READY state.)
+            // 如果请求来自NetworkClient外部,验证是否可以发送数据
+            // 如果是内部请求,我们相信内部代码已经完成了验证
+            // 对于某些内部请求,验证会略有不同
+            // (例如,ApiVersionsRequests可以在READY状态之前发送)
             if (!canSendRequest(nodeId, now))
                 throw new IllegalStateException("Attempt to send a request to node " + nodeId + " which is not ready.");
         }
         AbstractRequest.Builder<?> builder = clientRequest.requestBuilder();
         try {
+            // 获取节点API版本信息
             NodeApiVersions versionInfo = apiVersions.get(nodeId);
             short version;
-            // Note: if versionInfo is null, we have no server version information. This would be
-            // the case when sending the initial ApiVersionRequest which fetches the version
-            // information itself.  It is also the case when discoverBrokerVersions is set to false.
+            // 注意:如果versionInfo为null,表示我们没有服务器版本信息
+            // 这种情况发生在发送初始ApiVersionRequest获取版本信息时
+            // 或者当discoverBrokerVersions设置为false时
             if (versionInfo == null) {
                 version = builder.latestAllowedVersion();
                 if (discoverBrokerVersions && log.isTraceEnabled())
@@ -577,18 +578,19 @@ public class NetworkClient implements KafkaClient {
                 version = versionInfo.latestUsableVersion(clientRequest.apiKey(), builder.oldestAllowedVersion(),
                         builder.latestAllowedVersion());
             }
-            // The call to build may also throw UnsupportedVersionException, if there are essential
-            // fields that cannot be represented in the chosen version.
+            // build调用可能会抛出UnsupportedVersionException异常
+            // 如果有必要的字段无法在所选版本中表示
             doSend(clientRequest, isInternalRequest, now, builder.build(version));
         } catch (UnsupportedVersionException unsupportedVersionException) {
-            // If the version is not supported, skip sending the request over the wire.
-            // Instead, simply add it to the local queue of aborted requests.
+            // 如果版本不支持,跳过通过网络发送请求
+            // 而是简单地将其添加到本地中止请求队列中
             log.debug("Version mismatch when attempting to send {} with correlation id {} to {}", builder,
                     clientRequest.correlationId(), clientRequest.destination(), unsupportedVersionException);
             ClientResponse clientResponse = new ClientResponse(clientRequest.makeHeader(builder.latestAllowedVersion()),
                     clientRequest.callback(), clientRequest.destination(), now, now,
                     false, unsupportedVersionException, null, null);
 
+            // 根据请求类型处理版本不支持的情况
             if (!isInternalRequest)
                 abortedSends.add(clientResponse);
             else if (clientRequest.apiKey() == ApiKeys.METADATA)
@@ -600,12 +602,15 @@ public class NetworkClient implements KafkaClient {
 
     private void doSend(ClientRequest clientRequest, boolean isInternalRequest, long now, AbstractRequest request) {
         String destination = clientRequest.destination();
+        // 创建请求头
         RequestHeader header = clientRequest.makeHeader(request.version());
         if (log.isDebugEnabled()) {
             log.debug("Sending {} request with header {} and timeout {} to node {}: {}",
                 clientRequest.apiKey(), header, clientRequest.requestTimeoutMs(), destination, request);
         }
+        // 将请求转换为可发送格式
         Send send = request.toSend(header);
+        // 创建正在传输的请求对象
         InFlightRequest inFlightRequest = new InFlightRequest(
                 clientRequest,
                 header,
@@ -613,7 +618,9 @@ public class NetworkClient implements KafkaClient {
                 request,
                 send,
                 now);
+        // 添加到正在传输的请求列表中
         this.inFlightRequests.add(inFlightRequest);
+        // 通过selector发送请求
         selector.send(new NetworkSend(clientRequest.destination(), send));
     }
 
@@ -628,36 +635,49 @@ public class NetworkClient implements KafkaClient {
      */
     @Override
     public List<ClientResponse> poll(long timeout, long now) {
+        // 确保客户端处于活跃状态
         ensureActive();
 
         if (!abortedSends.isEmpty()) {
-            // If there are aborted sends because of unsupported version exceptions or disconnects,
-            // handle them immediately without waiting for Selector#poll.
+            // 如果存在因不支持的版本异常或断开连接而中止的发送,
+            // 立即处理它们,无需等待Selector#poll
             List<ClientResponse> responses = new ArrayList<>();
             handleAbortedSends(responses);
             completeResponses(responses);
             return responses;
         }
 
+        // 获取元数据和遥测超时时间
         long metadataTimeout = metadataUpdater.maybeUpdate(now);
         long telemetryTimeout = telemetrySender != null ? telemetrySender.maybeUpdate(now) : Integer.MAX_VALUE;
         try {
+            // 执行网络I/O操作,使用最小的超时时间
             this.selector.poll(Utils.min(timeout, metadataTimeout, telemetryTimeout, defaultRequestTimeoutMs));
         } catch (IOException e) {
             log.error("Unexpected error during I/O", e);
         }
 
-        // process completed actions
+        // 处理已完成的操作
         long updatedNow = this.time.milliseconds();
         List<ClientResponse> responses = new ArrayList<>();
+        
+        // 处理已完成的发送请求
         handleCompletedSends(responses, updatedNow);
+        // 处理已完成的接收响应
         handleCompletedReceives(responses, updatedNow);
+        // 处理断开的连接
         handleDisconnections(responses, updatedNow);
+        // 处理新建立的连接
         handleConnections();
+        // 处理API版本请求的初始化
         handleInitiateApiVersionRequests(updatedNow);
+        // 处理超时的连接
         handleTimedOutConnections(responses, updatedNow);
+        // 处理超时的请求
         handleTimedOutRequests(responses, updatedNow);
+        // 处理重新引导
         handleRebootstrap(responses, updatedNow);
+        // 完成所有响应的处理
         completeResponses(responses);
 
         return responses;

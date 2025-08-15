@@ -608,23 +608,32 @@ class ReplicaManager(val config: KafkaConfig,
   def addToActionQueue(action: Runnable): Unit = defaultActionQueue.add(action)
 
   /**
-   * Append messages to leader replicas of the partition, without waiting on replication.
+   * 将消息追加到分区的leader副本,不等待复制完成。
    *
-   * Noted that all pending delayed check operations are stored in a queue. All callers to ReplicaManager.appendRecordsToLeader()
-   * are expected to call ActionQueue.tryCompleteActions for all affected partitions, without holding any conflicting
-   * locks.
+   * 注意所有待处理的延迟检查操作都存储在队列中。所有调用ReplicaManager.appendRecordsToLeader()的地方
+   * 都需要为受影响的分区调用ActionQueue.tryCompleteActions,且不能持有任何冲突的锁。
    *
-   * @param requiredAcks                  the required acks -- it is only used to ensure that the append meets the
-   *                                      required acks.
-   * @param internalTopicsAllowed         boolean indicating whether internal topics can be appended to
-   * @param origin                        source of the append request (ie, client, replication, coordinator)
-   * @param entriesPerPartition           the records per topic partition to be appended.
-   *                                      If topic partition contains Uuid.ZERO_UUID as topicId the method
-   *                                      will fall back to the old behaviour and rely on topic name.
-   * @param requestLocal                  container for the stateful instances scoped to this request -- this must correspond to the
-   *                                      thread calling this method
-   * @param actionQueue                   the action queue to use. ReplicaManager#defaultActionQueue is used by default.
-   * @param verificationGuards            the mapping from topic partition to verification guards if transaction verification is used
+   * @param requiredAcks                  所需的确认数 - 仅用于确保追加满足所需的确认数
+   * @param internalTopicsAllowed         布尔值,表示是否允许追加到内部主题
+   * @param origin                        追加请求的来源(如客户端、复制、协调器)
+   * @param entriesPerPartition           要追加的每个主题分区的记录。
+   *                                      如果主题分区包含Uuid.ZERO_UUID作为topicId,
+   *                                      该方法将回退到旧的行为并依赖主题名称。
+   * @param requestLocal                  与调用此方法的线程对应的请求作用域内的状态实例容器
+   * @param actionQueue                   要使用的操作队列。默认使用ReplicaManager#defaultActionQueue。
+   * @param verificationGuards            如果使用事务验证,则为主题分区到验证保护的映射
+   */
+  /**
+   * 将消息记录追加到 leader 副本
+   * 
+   * @param requiredAcks 需要的确认数
+   * @param internalTopicsAllowed 是否允许写入内部主题
+   * @param origin 追加来源
+   * @param entriesPerPartition 每个分区要追加的消息记录
+   * @param requestLocal 请求本地状态
+   * @param actionQueue 操作队列,用于完成延迟操作
+   * @param verificationGuards 事务验证保护
+   * @return 每个分区的追加结果
    */
   def appendRecordsToLeader(
     requiredAcks: Short,
@@ -651,42 +660,42 @@ class ReplicaManager(val config: KafkaConfig,
     localProduceResultsWithTopicId
   }
 
-  /**
-   * Append messages to leader replicas of the partition, and wait for them to be replicated to other replicas;
-   * the callback function will be triggered either when timeout or the required acks are satisfied;
-   * if the callback function itself is already synchronized on some object then pass this object to avoid deadlock.
-   *
-   * Noted that all pending delayed check operations are stored in a queue. All callers to ReplicaManager.appendRecords()
-   * are expected to call ActionQueue.tryCompleteActions for all affected partitions, without holding any conflicting
-   * locks.
-   *
-   * @param timeout                       maximum time we will wait to append before returning
-   * @param requiredAcks                  number of replicas who must acknowledge the append before sending the response
-   * @param internalTopicsAllowed         boolean indicating whether internal topics can be appended to
-   * @param origin                        source of the append request (ie, client, replication, coordinator)
-   * @param entriesPerPartition           the records per topic partition to be appended.
-   *                                      If topic partition contains Uuid.ZERO_UUID as topicId the method
-   *                                      will fall back to the old behaviour and rely on topic name.
-   * @param responseCallback              callback for sending the response
-   * @param recordValidationStatsCallback callback for updating stats on record conversions
-   * @param requestLocal                  container for the stateful instances scoped to this request -- this must correspond to the
-   *                                      thread calling this method
-   * @param verificationGuards            the mapping from topic partition to verification guards if transaction verification is used
-   */
+/**
+ * 将消息追加到分区的leader副本,并等待消息被复制到其他副本。
+ * 当超时或者满足所需的acks数量时,回调函数会被触发。
+ * 如果回调函数本身已经在某个对象上同步,则传入该对象以避免死锁。
+ *
+ * 注意所有待处理的延迟检查操作都存储在队列中。所有调用ReplicaManager.appendRecords()的地方
+ * 都需要为受影响的分区调用ActionQueue.tryCompleteActions,且不能持有任何冲突的锁。
+ *
+ * @param timeout 等待追加操作完成的最大时间
+ * @param requiredAcks 在发送响应前必须确认追加操作的副本数量
+ * @param internalTopicsAllowed 是否允许追加到内部主题
+ * @param origin 追加请求的来源(如客户端、复制、协调器)
+ * @param entriesPerPartition 要追加的每个主题分区的记录。
+ *                           如果主题分区包含Uuid.ZERO_UUID作为topicId,
+ *                           该方法将回退到旧的行为并依赖主题名称。
+ * @param responseCallback 用于发送响应的回调函数
+ * @param recordValidationStatsCallback 用于更新记录转换统计信息的回调函数
+ * @param requestLocal 与调用此方法的线程对应的请求作用域内的状态实例容器
+ * @param verificationGuards 如果使用事务验证,则为主题分区到验证保护的映射
+ */
   def appendRecords(timeout: Long,
                     requiredAcks: Short,
-                    internalTopicsAllowed: Boolean,
+                    internalTopicsAllowed: Boolean, 
                     origin: AppendOrigin,
                     entriesPerPartition: Map[TopicIdPartition, MemoryRecords],
                     responseCallback: Map[TopicIdPartition, PartitionResponse] => Unit,
                     recordValidationStatsCallback: Map[TopicIdPartition, RecordValidationStats] => Unit = _ => (),
                     requestLocal: RequestLocal = RequestLocal.noCaching,
                     verificationGuards: Map[TopicPartition, VerificationGuard] = Map.empty): Unit = {
+    // 检查requiredAcks参数是否有效,如果无效则返回错误响应
     if (!isValidRequiredAcks(requiredAcks)) {
       sendInvalidRequiredAcksResponse(entriesPerPartition, responseCallback)
       return
     }
 
+    // 将消息追加到leader副本
     val localProduceResults = appendRecordsToLeader(
       requiredAcks,
       internalTopicsAllowed,
@@ -697,12 +706,15 @@ class ReplicaManager(val config: KafkaConfig,
       verificationGuards
     )
 
+    // 构建生产请求的分区状态
     val produceStatus = buildProducePartitionStatus(localProduceResults)
 
+    // 调用回调函数更新记录验证统计信息
     recordValidationStatsCallback(localProduceResults.map { case (k, v) =>
       k -> v.info.recordValidationStats
     })
 
+    // 根据requiredAcks参数决定是否需要延迟处理生产请求
     maybeAddDelayedProduce(
       requiredAcks,
       timeout,
@@ -1375,7 +1387,15 @@ class ReplicaManager(val config: KafkaConfig,
   }
 
   /**
-   * Append the messages to the local replica logs
+   * 将消息追加到本地副本日志中。
+   * 
+   * @param internalTopicsAllowed 是否允许追加到内部主题
+   * @param origin 追加操作的来源
+   * @param entriesPerPartition 每个分区的内存记录映射
+   * @param requiredAcks 所需的确认数
+   * @param requestLocal 请求本地信息
+   * @param verificationGuards 验证保护映射
+   * @return 每个主题ID分区的日志追加结果映射
    */
   private def appendToLocalLog(internalTopicsAllowed: Boolean,
                                origin: AppendOrigin,
@@ -1385,8 +1405,17 @@ class ReplicaManager(val config: KafkaConfig,
                                verificationGuards: Map[TopicPartition, VerificationGuard]):
   Map[TopicIdPartition, LogAppendResult] = {
     val traceEnabled = isTraceEnabled
+    
+    /**
+     * 处理失败的记录追加操作。
+     * 
+     * @param topicIdPartition 主题ID分区
+     * @param t 抛出的异常
+     * @return 日志起始偏移量
+     */
     def processFailedRecord(topicIdPartition: TopicIdPartition, t: Throwable) = {
       val logStartOffset = onlinePartition(topicIdPartition.topicPartition()).map(_.logStartOffset).getOrElse(-1L)
+      // 标记失败的生产请求指标
       brokerTopicStats.topicStats(topicIdPartition.topic).failedProduceRequestRate.mark()
       brokerTopicStats.allTopicsStats.failedProduceRequestRate.mark()
       t match {
@@ -1402,11 +1431,13 @@ class ReplicaManager(val config: KafkaConfig,
     if (traceEnabled)
       trace(s"Append [$entriesPerPartition] to local log")
 
+    // 遍历每个分区的记录条目
     entriesPerPartition.map { case (topicIdPartition, records) =>
+      // 标记总生产请求指标
       brokerTopicStats.topicStats(topicIdPartition.topic).totalProduceRequestRate.mark()
       brokerTopicStats.allTopicsStats.totalProduceRequestRate.mark()
 
-      // reject appending to internal topics if it is not allowed
+      // 如果不允许追加到内部主题，则拒绝追加
       if (Topic.isInternal(topicIdPartition.topic) && !internalTopicsAllowed) {
         (topicIdPartition, LogAppendResult(
           LogAppendInfo.UNKNOWN_LOG_APPEND_INFO,
@@ -1414,12 +1445,14 @@ class ReplicaManager(val config: KafkaConfig,
           hasCustomErrorMessage = false))
       } else {
         try {
+          // 获取分区或抛出异常
           val partition = getPartitionOrException(topicIdPartition)
+          // 将记录追加到领导者分区
           val info = partition.appendRecordsToLeader(records, origin, requiredAcks, requestLocal,
             verificationGuards.getOrElse(topicIdPartition.topicPartition(), VerificationGuard.SENTINEL))
           val numAppendedMessages = info.numMessages
 
-          // update stats for successfully appended bytes and messages as bytesInRate and messageInRate
+          // 更新成功追加的字节数和消息数的统计信息（bytesInRate 和 messageInRate）
           brokerTopicStats.topicStats(topicIdPartition.topic).bytesInRate.mark(records.sizeInBytes)
           brokerTopicStats.allTopicsStats.bytesInRate.mark(records.sizeInBytes)
           brokerTopicStats.topicStats(topicIdPartition.topic).messagesInRate.mark(numAppendedMessages)
@@ -1429,11 +1462,12 @@ class ReplicaManager(val config: KafkaConfig,
             trace(s"${records.sizeInBytes} written to log $topicIdPartition beginning at offset " +
               s"${info.firstOffset} and ending at offset ${info.lastOffset}")
 
+          // 返回成功的日志追加结果
           (topicIdPartition, LogAppendResult(info, exception = None, hasCustomErrorMessage = false))
 
         } catch {
-          // NOTE: Failed produce requests metric is not incremented for known exceptions
-          // it is supposed to indicate un-expected failures of a broker in handling a produce request
+          // 注意：对于已知异常，失败的生产请求指标不会递增
+          // 它应该指示代理在处理生产请求时的意外失败
           case e@ (_: UnknownTopicOrPartitionException |
                    _: NotLeaderOrFollowerException |
                    _: RecordTooLargeException |
@@ -1441,13 +1475,16 @@ class ReplicaManager(val config: KafkaConfig,
                    _: CorruptRecordException |
                    _: KafkaStorageException |
                    _: UnknownTopicIdException) =>
+            // 处理已知的异常类型，返回带有异常信息的日志追加结果
             (topicIdPartition, LogAppendResult(LogAppendInfo.UNKNOWN_LOG_APPEND_INFO, Some(e), hasCustomErrorMessage = false))
           case rve: RecordValidationException =>
+            // 处理记录验证异常
             val logStartOffset = processFailedRecord(topicIdPartition, rve.invalidException)
             val recordErrors = rve.recordErrors
             (topicIdPartition, LogAppendResult(LogAppendInfo.unknownLogAppendInfoWithAdditionalInfo(logStartOffset, recordErrors),
               Some(rve.invalidException), hasCustomErrorMessage = true))
           case t: Throwable =>
+            // 处理其他所有异常
             val logStartOffset = processFailedRecord(topicIdPartition, t)
             (topicIdPartition, LogAppendResult(LogAppendInfo.unknownLogAppendInfoWithLogStartOffset(logStartOffset),
               Some(t), hasCustomErrorMessage = false))

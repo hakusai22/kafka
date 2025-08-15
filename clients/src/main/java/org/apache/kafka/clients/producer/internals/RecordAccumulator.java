@@ -253,7 +253,6 @@ public class RecordAccumulator {
 
         return false;
     }
-
     /**
      * Add a record to the accumulator, return the append result
      * <p>
@@ -282,23 +281,23 @@ public class RecordAccumulator {
                                      long maxTimeToBlock,
                                      long nowMs,
                                      Cluster cluster) throws InterruptedException {
+        // 获取或创建topic信息,包含分区器等
         TopicInfo topicInfo = topicInfoMap.computeIfAbsent(topic, k -> new TopicInfo(createBuiltInPartitioner(logContext, k, batchSize)));
 
-        // We keep track of the number of appending thread to make sure we do not miss batches in
-        // abortIncompleteBatches().
+        // 追踪正在进行append操作的线程数,确保不会遗漏未完成的批次
         appendsInProgress.incrementAndGet();
         ByteBuffer buffer = null;
+        // 如果headers为空则使用空headers
         if (headers == null) headers = Record.EMPTY_HEADERS;
         try {
-            // Loop to retry in case we encounter partitioner's race conditions.
+            // 循环重试以处理分区器的竞争条件
             while (true) {
-                // If the message doesn't have any partition affinity, so we pick a partition based on the broker
-                // availability and performance.  Note, that here we peek current partition before we hold the
-                // deque lock, so we'll need to make sure that it's not changed while we were waiting for the
-                // deque lock.
+                // 如果消息没有指定分区,则根据broker可用性和性能选择一个分区
+                // 注意:在获取deque锁之前先获取当前分区,需要确保等待锁期间分区没有变化
                 final BuiltInPartitioner.StickyPartitionInfo partitionInfo;
                 final int effectivePartition;
                 if (partition == RecordMetadata.UNKNOWN_PARTITION) {
+                    // 获取当前分区信息
                     partitionInfo = topicInfo.builtInPartitioner.peekCurrentPartitionInfo(cluster);
                     effectivePartition = partitionInfo.partition();
                 } else {
@@ -306,53 +305,56 @@ public class RecordAccumulator {
                     effectivePartition = partition;
                 }
 
-                // Now that we know the effective partition, let the caller know.
+                // 通知调用者实际使用的分区
                 setPartition(callbacks, effectivePartition);
 
-                // check if we have an in-progress batch
+                // 检查是否有正在进行的批次
                 Deque<ProducerBatch> dq = topicInfo.batches.computeIfAbsent(effectivePartition, k -> new ArrayDeque<>());
                 synchronized (dq) {
-                    // After taking the lock, validate that the partition hasn't changed and retry.
+                    // 获取锁后验证分区是否发生变化,如果变化则重试
                     if (partitionChanged(topic, topicInfo, partitionInfo, dq, nowMs, cluster))
                         continue;
 
+                    // 尝试追加到现有批次
                     RecordAppendResult appendResult = tryAppend(timestamp, key, value, headers, callbacks, dq, nowMs);
                     if (appendResult != null) {
-                        // If queue has incomplete batches we disable switch (see comments in updatePartitionInfo).
+                        // 如果队列有未完成的批次则禁用分区切换
                         boolean enableSwitch = allBatchesFull(dq);
                         topicInfo.builtInPartitioner.updatePartitionInfo(partitionInfo, appendResult.appendedBytes, cluster, enableSwitch);
                         return appendResult;
                     }
                 }
 
+                // 如果没有可用buffer则分配新的
                 if (buffer == null) {
+                    // 计算所需buffer大小
                     int size = Math.max(this.batchSize, AbstractRecords.estimateSizeInBytesUpperBound(
                             RecordBatch.CURRENT_MAGIC_VALUE, compression.type(), key, value, headers));
                     log.trace("Allocating a new {} byte message buffer for topic {} partition {} with remaining timeout {}ms", size, topic, effectivePartition, maxTimeToBlock);
-                    // This call may block if we exhausted buffer space.
+                    // 分配buffer,如果内存不足可能会阻塞
                     buffer = free.allocate(size, maxTimeToBlock);
-                    // Update the current time in case the buffer allocation blocked above.
-                    // NOTE: getting time may be expensive, so calling it under a lock
-                    // should be avoided.
+                    // 更新当前时间,因为buffer分配可能会阻塞
                     nowMs = time.milliseconds();
                 }
 
                 synchronized (dq) {
-                    // After taking the lock, validate that the partition hasn't changed and retry.
+                    // 再次验证分区是否变化
                     if (partitionChanged(topic, topicInfo, partitionInfo, dq, nowMs, cluster))
                         continue;
 
+                    // 创建新批次并追加记录
                     RecordAppendResult appendResult = appendNewBatch(topic, effectivePartition, dq, timestamp, key, value, headers, callbacks, buffer, nowMs);
-                    // Set buffer to null, so that deallocate doesn't return it back to free pool, since it's used in the batch.
+                    // 如果创建了新批次,将buffer置空以避免被释放
                     if (appendResult.newBatchCreated)
                         buffer = null;
-                    // If queue has incomplete batches we disable switch (see comments in updatePartitionInfo).
+                    // 更新分区信息
                     boolean enableSwitch = allBatchesFull(dq);
                     topicInfo.builtInPartitioner.updatePartitionInfo(partitionInfo, appendResult.appendedBytes, cluster, enableSwitch);
                     return appendResult;
                 }
             }
         } finally {
+            // 释放未使用的buffer并减少正在进行的append计数
             free.deallocate(buffer);
             appendsInProgress.decrementAndGet();
         }

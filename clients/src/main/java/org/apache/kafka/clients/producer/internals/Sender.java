@@ -230,13 +230,19 @@ public class Sender implements Runnable {
     }
 
     /**
-     * The main run loop for the sender thread
+     * 发送者线程的主循环
+     * 
+     * 该循环会不断执行以下操作:
+     * 1. 从RecordAccumulator获取准备好的消息批次
+     * 2. 将这些批次通过网络发送到Kafka集群
+     * 3. 处理响应和错误
+     * 4. 管理事务状态(如果启用了事务)
      */
     @Override
     public void run() {
         log.debug("Starting Kafka producer I/O thread.");
 
-        // main loop, runs until close is called
+        // 主循环,直到调用close方法才会退出
         while (running) {
             try {
                 runOnce();
@@ -247,9 +253,8 @@ public class Sender implements Runnable {
 
         log.debug("Beginning shutdown of Kafka producer I/O thread, sending remaining records.");
 
-        // okay we stopped accepting requests but there may still be
-        // requests in the transaction manager, accumulator or waiting for acknowledgment,
-        // wait until these are completed.
+        // 虽然已停止接受新的请求,但事务管理器、累加器中可能还有请求,或者正在等待确认
+        // 等待这些请求完成
         while (!forceClose && ((this.accumulator.hasUndrained() || this.client.inFlightRequestCount() > 0) || hasPendingTransactionalRequests())) {
             try {
                 runOnce();
@@ -258,17 +263,17 @@ public class Sender implements Runnable {
             }
         }
 
-        // Abort the transaction if any commit or abort didn't go through the transaction manager's queue
+        // 如果有未完成的事务提交或中止没有通过事务管理器的队列,则中止事务
         while (!forceClose && transactionManager != null && transactionManager.hasOngoingTransaction()) {
             if (!transactionManager.isCompleting()) {
                 log.info("Aborting incomplete transaction due to shutdown");
                 try {
-                    // It is possible for the transaction manager to throw errors when aborting. Catch these
-                    // so as not to interfere with the rest of the shutdown logic.
+                    // 事务管理器在中止时可能会抛出错误,捕获这些错误
+                    // 以免影响其他关闭逻辑
                     transactionManager.beginAbort();
                 } catch (Exception e) {
                     log.error("Error in kafka producer I/O thread while aborting transaction when during closing: ", e);
-                    // Force close in case the transactionManager is in error states.
+                    // 如果事务管理器处于错误状态,则强制关闭
                     forceClose = true;
                 }
             }
@@ -280,8 +285,7 @@ public class Sender implements Runnable {
         }
 
         if (forceClose) {
-            // We need to fail all the incomplete transactional requests and batches and wake up the threads waiting on
-            // the futures.
+            // 需要使所有未完成的事务请求和批次失败,并唤醒等待future的线程
             if (transactionManager != null) {
                 log.debug("Aborting incomplete transactional requests due to forced shutdown");
                 transactionManager.close();
@@ -299,44 +303,68 @@ public class Sender implements Runnable {
     }
 
     /**
-     * Run a single iteration of sending
+     * 执行一次发送迭代
+     * 
+     * 主要流程:
+     * 1. 如果启用了事务,先处理事务相关逻辑:
+     *    - 解析序列号
+     *    - 处理事务错误
+     *    - 更新生产者ID
+     *    - 发送事务控制请求
+     * 
+     * 2. 执行常规消息发送:
+     *    - 获取准备好的消息批次
+     *    - 将批次发送到对应的broker节点
+     *    - 处理发送响应
+     *    - 执行网络轮询
      *
      */
     void runOnce() {
+        // 如果存在事务管理器,则需要先处理事务相关的逻辑
         if (transactionManager != null) {
             try {
+                // 尝试解析序列号
                 transactionManager.maybeResolveSequences();
 
+                // 获取最近一次的错误
                 RuntimeException lastError = transactionManager.lastError();
 
-                // do not continue sending if the transaction manager is in a failed state
+                // 如果事务管理器处于致命错误状态,则不继续发送
                 if (transactionManager.hasFatalError()) {
+                    // 如果有错误,可能需要中止批次
                     if (lastError != null)
                         maybeAbortBatches(lastError);
+                    // 执行一次网络轮询,然后返回
                     client.poll(retryBackoffMs, time.milliseconds());
                     return;
                 }
 
+                // 如果有可中止的错误且需要处理授权错误,则直接返回
                 if (transactionManager.hasAbortableError() && shouldHandleAuthorizationError(lastError)) {
                     return;
                 }
 
-                // Check whether we need a new producerId. If so, we will enqueue an InitProducerId
-                // request which will be sent below
+                // 检查是否需要新的生产者ID
+                // 如果需要,将会入队一个InitProducerId请求
                 transactionManager.bumpIdempotentEpochAndResetIdIfNeeded();
 
+                // 尝试发送和轮询事务请求
+                // 如果有事务请求被处理,则返回
                 if (maybeSendAndPollTransactionalRequest()) {
                     return;
                 }
             } catch (AuthenticationException e) {
-                // This is already logged as error, but propagated here to perform any clean ups.
+                // 捕获认证异常,记录日志并通知事务管理器
                 log.trace("Authentication exception while processing transactional request", e);
                 transactionManager.authenticationFailed(e);
             }
         }
 
+        // 获取当前时间戳
         long currentTimeMs = time.milliseconds();
+        // 发送生产者数据,获取下一次轮询超时时间
         long pollTimeout = sendProducerData(currentTimeMs);
+        // 执行一次网络轮询
         client.poll(pollTimeout, currentTimeMs);
     }
 
