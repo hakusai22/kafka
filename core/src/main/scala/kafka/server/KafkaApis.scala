@@ -462,57 +462,69 @@ class KafkaApis(val requestChannel: RequestChannel,
    * Handle a produce request
    */
   def handleProduceRequest(request: RequestChannel.Request, requestLocal: RequestLocal): Unit = {
+    // 从请求中获取ProduceRequest对象
     val produceRequest = request.body[ProduceRequest]
 
+    // 检查是否包含事务性记录,如果有则需要验证事务ID的权限
     if (RequestUtils.hasTransactionalRecords(produceRequest)) {
       val isAuthorizedTransactional = produceRequest.transactionalId != null &&
         authHelper.authorize(request.context, WRITE, TRANSACTIONAL_ID, produceRequest.transactionalId)
       if (!isAuthorizedTransactional) {
+        // 如果没有事务ID的权限,返回错误响应
         requestHelper.sendErrorResponseMaybeThrottle(request, Errors.TRANSACTIONAL_ID_AUTHORIZATION_FAILED.exception)
         return
       }
     }
 
-    val unauthorizedTopicResponses = mutable.Map[TopicIdPartition, PartitionResponse]()
-    val nonExistingTopicResponses = mutable.Map[TopicIdPartition, PartitionResponse]()
-    val invalidRequestResponses = mutable.Map[TopicIdPartition, PartitionResponse]()
-    val authorizedRequestInfo = mutable.Map[TopicIdPartition, MemoryRecords]()
+    // 用于存储不同类型的响应结果
+    val unauthorizedTopicResponses = mutable.Map[TopicIdPartition, PartitionResponse]() // 未授权的topic响应
+    val nonExistingTopicResponses = mutable.Map[TopicIdPartition, PartitionResponse]() // 不存在的topic响应
+    val invalidRequestResponses = mutable.Map[TopicIdPartition, PartitionResponse]() // 无效请求的响应
+    val authorizedRequestInfo = mutable.Map[TopicIdPartition, MemoryRecords]() // 已授权的请求信息
     val topicIdToPartitionData = new mutable.ArrayBuffer[(TopicIdPartition, ProduceRequestData.PartitionProduceData)]
 
+    // 遍历请求中的所有topic数据
     produceRequest.data.topicData.forEach { topic =>
       topic.partitionData.forEach { partition =>
+        // 获取topic名称和ID
         val (topicName, topicId) = if (topic.topicId().equals(Uuid.ZERO_UUID)) {
+          // 如果topicId为0,则使用topic名称查找ID
           (topic.name(), metadataCache.getTopicId(topic.name()))
         } else {
+          // 否则使用topicId查找名称
           (metadataCache.getTopicName(topic.topicId).orElse(topic.name), topic.topicId())
         }
 
         val topicPartition = new TopicPartition(topicName, partition.index())
-        // To be compatible with the old version, only return UNKNOWN_TOPIC_ID if request version uses topicId, but the corresponding topic name can't be found.
+        // 为了兼容旧版本,只有当请求版本使用topicId且找不到对应topic名称时才返回UNKNOWN_TOPIC_ID
         if (topicName.isEmpty && request.header.apiVersion > 12)
           nonExistingTopicResponses += new TopicIdPartition(topicId, topicPartition) -> new PartitionResponse(Errors.UNKNOWN_TOPIC_ID)
         else
           topicIdToPartitionData += new TopicIdPartition(topicId, topicPartition) -> partition
       }
     }
-    // cache the result to avoid redundant authorization calls
+    // 缓存授权结果以避免重复授权调用
     val authorizedTopics = authHelper.filterByAuthorized(request.context, WRITE, TOPIC, topicIdToPartitionData)(_._1.topic)
 
+    // 处理每个分区的数据
     topicIdToPartitionData.foreach { case (topicIdPartition, partition) =>
-      // This caller assumes the type is MemoryRecords and that is true on current serialization
-      // We cast the type to avoid causing big change to code base.
-      // https://issues.apache.org/jira/browse/KAFKA-10698
+      // 将分区数据转换为MemoryRecords类型
       val memoryRecords = partition.records.asInstanceOf[MemoryRecords]
       if (!authorizedTopics.contains(topicIdPartition.topic))
+        // 如果topic未授权,添加到未授权响应
         unauthorizedTopicResponses += topicIdPartition -> new PartitionResponse(Errors.TOPIC_AUTHORIZATION_FAILED)
       else if (!metadataCache.contains(topicIdPartition.topicPartition))
+        // 如果topic不存在,添加到不存在响应
         nonExistingTopicResponses += topicIdPartition -> new PartitionResponse(Errors.UNKNOWN_TOPIC_OR_PARTITION)
       else
         try {
+          // 验证记录格式
           ProduceRequest.validateRecords(request.header.apiVersion, memoryRecords)
+          // 添加到已授权请求信息
           authorizedRequestInfo += (topicIdPartition -> memoryRecords)
         } catch {
           case e: ApiException =>
+            // 如果验证失败,添加到无效请求响应
             invalidRequestResponses += topicIdPartition -> new PartitionResponse(Errors.forException(e))
         }
     }

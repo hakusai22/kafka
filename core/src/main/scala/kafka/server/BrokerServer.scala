@@ -181,32 +181,41 @@ class BrokerServer(
   def replicaManager: ReplicaManager = _replicaManager
 
   override def startup(): Unit = {
+    // 如果不能从SHUTDOWN状态转换到STARTING状态则直接返回
     if (!maybeChangeStatus(SHUTDOWN, STARTING)) return
+    // 设置启动超时时间
     val startupDeadline = Deadline.fromDelay(time, config.serverMaxStartupTimeMs, TimeUnit.MILLISECONDS)
     try {
+      // 启动共享服务器组件
       sharedServer.startForBroker()
 
       info("Starting broker")
 
+      // 创建客户端指标接收插件
       val clientMetricsReceiverPlugin = new ClientMetricsReceiverPlugin()
 
+      // 初始化动态配置并实例化配额管理器
       config.dynamicConfig.initialize(Some(clientMetricsReceiverPlugin))
       quotaManagers = QuotaFactory.instantiate(config, metrics, time, s"broker-${config.nodeId}-", ProcessRole.BrokerRole.toString)
+      // 从快照中读取动态broker配置
       DynamicBrokerConfig.readDynamicBrokerConfigsFromSnapshot(raftManager, config, quotaManagers, logContext)
 
       /* start scheduler */
+      // 创建并启动Kafka调度器
       kafkaScheduler = new KafkaScheduler(config.backgroundThreads)
       kafkaScheduler.startup()
 
       /* register broker metrics */
+      // 注册broker主题统计信息
       brokerTopicStats = new BrokerTopicStats(config.remoteLogManagerConfig.isRemoteStorageSystemEnabled())
 
+      // 创建日志目录故障通道
       logDirFailureChannel = new LogDirFailureChannel(config.logDirs.size)
 
+      // 创建KRaft元数据缓存
       metadataCache = new KRaftMetadataCache(config.nodeId, () => raftManager.client.kraftVersion())
 
-      // Create log manager, but don't start it because we need to delay any potential unclean shutdown log recovery
-      // until we catch up on the metadata log and have up-to-date topic and broker configs.
+      // 创建日志管理器(但不启动,等待元数据同步完成)
       logManager = LogManager(config,
         sharedServer.metaPropsEnsemble.errorLogDirs().asScala.toSeq,
         metadataCache,
@@ -215,23 +224,25 @@ class BrokerServer(
         brokerTopicStats,
         logDirFailureChannel)
 
+      // 创建broker生命周期管理器
       lifecycleManager = new BrokerLifecycleManager(config,
         time,
         s"broker-${config.nodeId}-",
         logDirs = logManager.directoryIdsSet,
         () => new Thread(() => shutdown(), "kafka-shutdown-thread").start())
 
-      // Enable delegation token cache for all SCRAM mechanisms to simplify dynamic update.
-      // This keeps the cache up-to-date if new SCRAM mechanisms are enabled dynamically.
+      // 为所有SCRAM机制启用委派令牌缓存,以简化动态更新
       tokenCache = new DelegationTokenCache(ScramMechanism.mechanismNames)
       credentialProvider = new CredentialProvider(ScramMechanism.mechanismNames, tokenCache)
 
+      // 等待控制器选民future完成
       FutureUtils.waitWithLogging(logger.underlying, logIdent,
         "controller quorum voters future",
         sharedServer.controllerQuorumVotersFuture,
         startupDeadline, time)
       val controllerNodeProvider = RaftControllerNodeProvider(raftManager, config)
 
+      // 创建并启动客户端到控制器的通道管理器
       clientToControllerChannelManager = new NodeToControllerChannelManagerImpl(
         controllerNodeProvider,
         time,
@@ -242,9 +253,11 @@ class BrokerServer(
         retryTimeoutMs = 60000
       )
       clientToControllerChannelManager.start()
+      // 创建转发管理器和客户端指标管理器
       forwardingManager = new ForwardingManagerImpl(clientToControllerChannelManager, metrics)
       clientMetricsManager = new ClientMetricsManager(clientMetricsReceiverPlugin, config.clientTelemetryMaxBytes, time, metrics)
 
+      // 创建API版本管理器
       val apiVersionManager = new DefaultApiVersionManager(
         ListenerType.BROKER,
         () => forwardingManager.controllerApiVersions,
@@ -254,18 +267,18 @@ class BrokerServer(
         Optional.of(clientMetricsManager)
       )
 
+      // 创建共享获取会话缓存
       val shareFetchSessionCache : ShareSessionCache = new ShareSessionCache(
         config.shareGroupConfig.shareGroupMaxShareSessions()
       )
 
+      // 设置连接断开监听器
       val connectionDisconnectListeners = Seq(
         clientMetricsManager.connectionDisconnectListener(),
         shareFetchSessionCache.connectionDisconnectListener()
       )
 
-      // Create and start the socket server acceptor threads so that the bound port is known.
-      // Delay starting processors until the end of the initialization sequence to ensure
-      // that credentials have been loaded before processing authentications.
+      // 创建Socket服务器(但延迟启动处理器)
       socketServer = new SocketServer(config,
         metrics,
         time,
@@ -274,15 +287,19 @@ class BrokerServer(
         sharedServer.socketFactory,
         connectionDisconnectListeners)
 
+      // 创建客户端配额元数据管理器
       clientQuotaMetadataManager = new ClientQuotaMetadataManager(quotaManagers, socketServer.connectionQuotas)
 
+      // 创建监听器信息
       val listenerInfo = ListenerInfo.create(Optional.of(config.interBrokerListenerName.value()),
           config.effectiveAdvertisedBrokerListeners.asJava).
             withWildcardHostnamesResolved().
             withEphemeralPortsCorrected(name => socketServer.boundPort(new ListenerName(name)))
 
+      // 创建远程日志管理器
       remoteLogManagerOpt = createRemoteLogManager(listenerInfo)
 
+      // 创建并启动分区变更管理器
       alterPartitionManager = AlterPartitionManager(
         config,
         scheduler = kafkaScheduler,
@@ -294,18 +311,18 @@ class BrokerServer(
       )
       alterPartitionManager.start()
 
+      // 创建事务分区管理器
       val addPartitionsLogContext = new LogContext(s"[AddPartitionsToTxnManager broker=${config.brokerId}]")
       val addPartitionsToTxnNetworkClient = NetworkUtils.buildNetworkClient("AddPartitionsManager", config, metrics, time, addPartitionsLogContext)
       val addPartitionsToTxnManager = new AddPartitionsToTxnManager(
         config,
         addPartitionsToTxnNetworkClient,
         metadataCache,
-        // The transaction coordinator is not created at this point so we must
-        // use a lambda here.
         transactionalId => transactionCoordinator.partitionFor(transactionalId),
         time
       )
 
+      // 创建分配通道管理器和分配管理器
       val assignmentsChannelManager = new NodeToControllerChannelManagerImpl(
         controllerNodeProvider,
         time,
@@ -323,6 +340,7 @@ class BrokerServer(
         (directoryId: Uuid) => logManager.directoryPath(directoryId).
           getOrElse("[unknown directory path]")
       )
+      // 创建目录事件处理器
       val directoryEventHandler = new DirectoryEventHandler {
         override def handleAssignment(partition: TopicIdPartition, directoryId: Uuid, reason: String, callback: Runnable): Unit =
           assignmentsManager.onAssignment(partition, directoryId, reason, callback)

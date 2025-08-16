@@ -249,29 +249,44 @@ public class LogSegment implements Closeable {
      */
     public void append(long largestOffset,
                        MemoryRecords records) throws IOException {
+        // 只有当记录集大小大于0时才进行处理
         if (records.sizeInBytes() > 0) {
+            // 记录日志追加的基本信息
             LOGGER.trace("Inserting {} bytes at end offset {} at position {}",
                 records.sizeInBytes(), largestOffset, log.sizeInBytes());
+            
+            // 获取当前日志段的物理位置(字节偏移量)
             int physicalPosition = log.sizeInBytes();
 
+            // 确保偏移量在有效范围内,否则抛出异常
             ensureOffsetInRange(largestOffset);
 
-            // append the messages
+            // 将消息追加到日志文件
             long appendedBytes = log.append(records);
             LOGGER.trace("Appended {} to {} at end offset {}", appendedBytes, log.file(), largestOffset);
 
+            // 遍历每个消息批次进行处理
             for (RecordBatch batch : records.batches()) {
+                // 获取批次的最大时间戳和最后偏移量
                 long batchMaxTimestamp = batch.maxTimestamp();
                 long batchLastOffset = batch.lastOffset();
+                
+                // 更新日志段的最大时间戳记录
                 if (batchMaxTimestamp > maxTimestampSoFar()) {
                     maxTimestampAndOffsetSoFar = new TimestampOffset(batchMaxTimestamp, batchLastOffset);
                 }
 
+                // 如果距离上次索引条目的字节数超过了索引间隔,则添加新的索引条目
                 if (bytesSinceLastIndexEntry > indexIntervalBytes) {
+                    // 追加偏移量索引
                     offsetIndex().append(batchLastOffset, physicalPosition);
+                    // 追加时间戳索引
                     timeIndex().maybeAppend(maxTimestampSoFar(), shallowOffsetOfMaxTimestampSoFar());
+                    // 重置计数器
                     bytesSinceLastIndexEntry = 0;
                 }
+                
+                // 更新物理位置和字节计数
                 var sizeInBytes = batch.sizeInBytes();
                 physicalPosition += sizeInBytes;
                 bytesSinceLastIndexEntry += sizeInBytes;
