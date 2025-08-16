@@ -69,74 +69,87 @@ import java.util.concurrent.atomic.AtomicReference;
 import java.util.stream.Collectors;
 
 /**
- * A network client for asynchronous request/response network i/o. This is an internal class used to implement the
- * user-facing producer and consumer clients.
+ * 用于异步请求/响应网络I/O的网络客户端。这是一个内部类,用于实现面向用户的生产者和消费者客户端。
  * <p>
- * This class is not thread-safe!
+ * 此类非线程安全!
  */
 public class NetworkClient implements KafkaClient {
-
+    /**
+     * NetworkClient的状态枚举
+     */
     private enum State {
+        /* 活跃状态,可以正常工作 */
         ACTIVE,
+        /* 正在关闭中 */
         CLOSING,
+        /* 已经关闭 */
         CLOSED
     }
 
+    /* 日志记录器 */
     private final Logger log;
 
     /* 用于执行网络I/O操作的选择器 */
     private final Selectable selector;
 
+    /* 元数据更新器 */
     private final MetadataUpdater metadataUpdater;
 
+    /* 用于生成随机偏移量 */
     private final Random randOffset;
 
-    /* the state of each node's connection */
+    /* 每个节点连接的状态管理器 */
     private final ClusterConnectionStates connectionStates;
 
-    /* the set of requests currently being sent or awaiting a response */
+    /* 当前正在发送或等待响应的请求集合 */
     private final InFlightRequests inFlightRequests;
 
-    /* the socket send buffer size in bytes */
+    /* Socket发送缓冲区大小(字节) */
     private final int socketSendBuffer;
 
-    /* the socket receive size buffer in bytes */
+    /* Socket接收缓冲区大小(字节) */
     private final int socketReceiveBuffer;
 
-    /* the client id used to identify this client in requests to the server */
+    /* 用于在请求中标识客户端的ID */
     private final String clientId;
 
-    /* the current correlation id to use when sending requests to servers */
+    /* 发送请求时使用的当前关联ID */
     private int correlation;
 
-    /* default timeout for individual requests to await acknowledgement from servers */
+    /* 单个请求等待服务器确认的默认超时时间(毫秒) */
     private final int defaultRequestTimeoutMs;
 
-    /* time in ms to wait before retrying to create connection to a server */
+    /* 重试连接服务器前的等待时间(毫秒) */
     private final long reconnectBackoffMs;
 
-    /* Timeout starting from an attempt to fetch metadata after which client rebootstraps */
+    /* 尝试获取元数据后触发重新引导的超时时间(毫秒) */
     private final long rebootstrapTriggerMs;
 
+    /* 元数据恢复策略 */
     private final MetadataRecoveryStrategy metadataRecoveryStrategy;
 
+    /* 时间工具类 */
     private final Time time;
 
-    /**
-     * True if we should send an ApiVersionRequest when first connecting to a broker.
-     */
+    /* 首次连接broker时是否发送ApiVersionRequest */
     private final boolean discoverBrokerVersions;
 
+    /* API版本管理器 */
     private final ApiVersions apiVersions;
 
+    /* 需要获取API版本信息的节点映射 */
     private final Map<String, ApiVersionsRequest.Builder> nodesNeedingApiVersionsFetch = new HashMap<>();
 
+    /* 已中止的发送请求列表 */
     private final List<ClientResponse> abortedSends = new LinkedList<>();
 
+    /* 限流时间传感器 */
     private final Sensor throttleTimeSensor;
 
+    /* 客户端当前状态 */
     private final AtomicReference<State> state;
 
+    /* 遥测数据发送器 */
     private final TelemetrySender telemetrySender;
 
     public NetworkClient(Selectable selector,
@@ -349,27 +362,30 @@ public class NetworkClient implements KafkaClient {
     }
 
     /**
-     * Begin connecting to the given node, return true if we are already connected and ready to send to that node.
-     *
-     * @param node The node to check
-     * @param now The current timestamp
-     * @return True if we are ready to send to the given node
+     * 开始连接到指定节点,如果已经连接并准备好向该节点发送数据则返回true
+     * 
+     * @param node 要检查的节点
+     * @param now 当前时间戳
+     * @return 如果已准备好向指定节点发送数据则返回true
      */
     @Override
     public boolean ready(Node node, long now) {
+        // 检查节点是否为空
         if (node.isEmpty())
             throw new IllegalArgumentException("Cannot connect to empty node " + node);
 
+        // 如果节点已经准备就绪,直接返回true
         if (isReady(node, now))
             return true;
 
+        // 如果可以建立连接,则初始化连接
         if (connectionStates.canConnect(node.idString(), now))
-            // if we are interested in sending to a node and we don't have a connection to it, initiate one
+            // 如果我们想要向一个节点发送数据但还没有连接,就初始化一个连接
             initiateConnect(node, now);
 
         return false;
     }
-
+    
     // Visible for testing
     boolean canConnect(Node node, long now) {
         return connectionStates.canConnect(node.idString(), now);
@@ -970,17 +986,24 @@ public class NetworkClient implements KafkaClient {
     }
 
     /**
-     * Handle any completed request send. In particular if no response is expected consider the request complete.
+     * 处理已完成的请求发送。特别是当不需要响应时,将请求标记为已完成。
+     * 
+     * 当一个请求发送完成后,如果该请求不需要等待服务端响应,那么就可以直接将其标记为完成状态。
+     * 这种情况通常发生在一些只需要发送但不需要接收响应的请求中,比如某些异步通知类请求。
      *
-     * @param responses The list of responses to update
-     * @param now The current time
+     * @param responses 需要更新的响应列表,用于存储已完成的请求响应
+     * @param now 当前时间戳,用于记录请求完成时间
      */
     private void handleCompletedSends(List<ClientResponse> responses, long now) {
-        // if no response is expected then when the send is completed, return it
+        // 遍历所有已完成发送的请求
         for (NetworkSend send : this.selector.completedSends()) {
+            // 获取最后一个发送到目标节点的请求
             InFlightRequest request = this.inFlightRequests.lastSent(send.destinationId());
+            // 如果该请求不需要响应
             if (!request.expectResponse) {
+                // 从正在处理的请求列表中移除该请求
                 this.inFlightRequests.completeLastSent(send.destinationId());
+                // 将请求标记为已完成并添加到响应列表中
                 responses.add(request.completed(null, now));
             }
         }

@@ -73,56 +73,89 @@ import java.util.function.Function;
 import java.util.stream.Collectors;
 
 /**
- * The background thread that handles the sending of produce requests to the Kafka cluster. This thread makes metadata
- * requests to renew its view of the cluster and then sends produce requests to the appropriate nodes.
+ * 后台线程,负责向Kafka集群发送生产请求。该线程会定期发送元数据请求来更新集群视图,
+ * 然后将生产请求发送到相应的节点。
  */
 public class Sender implements Runnable {
 
+    /**
+     * 日志记录器
+     */
     private final Logger log;
 
-    /* the state of each nodes connection */
+    /**
+     * 每个节点的连接状态
+     */
     private final KafkaClient client;
 
-    /* the record accumulator that batches records */
+    /**
+     * 用于批量处理记录的累加器
+     */
     private final RecordAccumulator accumulator;
 
-    /* the metadata for the client */
+    /**
+     * 客户端的元数据
+     */
     private final ProducerMetadata metadata;
 
-    /* the flag indicating whether the producer should guarantee the message order on the broker or not. */
+    /**
+     * 标识生产者是否需要保证消息在broker上的顺序
+     */
     private final boolean guaranteeMessageOrder;
 
-    /* the maximum request size to attempt to send to the server */
+    /**
+     * 尝试发送到服务器的最大请求大小
+     */
     private final int maxRequestSize;
 
-    /* the number of acknowledgements to request from the server */
+    /**
+     * 向服务器请求的确认数
+     */
     private final short acks;
 
-    /* the number of times to retry a failed request before giving up */
+    /**
+     * 失败请求重试次数上限
+     */
     private final int retries;
 
-    /* the clock instance used for getting the time */
+    /**
+     * 用于获取时间的时钟实例
+     */
     private final Time time;
 
-    /* true while the sender thread is still running */
+    /**
+     * 标识发送线程是否仍在运行
+     */
     private volatile boolean running;
 
-    /* true when the caller wants to ignore all unsent/inflight messages and force close.  */
+    /**
+     * 标识调用者是否要忽略所有未发送/在途消息并强制关闭
+     */
     private volatile boolean forceClose;
 
-    /* metrics */
+    /**
+     * 指标统计
+     */
     private final SenderMetrics sensors;
 
-    /* the max time to wait for the server to respond to the request*/
+    /**
+     * 等待服务器响应请求的最大时间
+     */
     private final int requestTimeoutMs;
 
-    /* The max time to wait before retrying a request which has failed */
+    /**
+     * 重试失败请求前等待的最大时间
+     */
     private final long retryBackoffMs;
 
-    /* all the state related to transactions, in particular the producer id, producer epoch, and sequence numbers */
+    /**
+     * 事务相关的所有状态,特别是生产者ID、生产者epoch和序列号
+     */
     private final TransactionManager transactionManager;
 
-    // A per-partition queue of batches ordered by creation time for tracking the in-flight batches
+    /**
+     * 按创建时间排序的每个分区批次队列,用于跟踪在途批次
+     */
     private final Map<TopicPartition, List<ProducerBatch>> inFlightBatches;
 
     public Sender(LogContext logContext,

@@ -72,7 +72,7 @@ public class BatchAccumulator<T> implements Closeable {
     // These fields are protected by the append lock
     private final ReentrantLock appendLock = new ReentrantLock();
     private long nextOffset;
-    private BatchBuilder<T> currentBatch;
+    private org.apache.kafka.raft.internals.BatchBuilder<T> currentBatch;
 
     private enum DrainStatus {
         STARTED, FINISHED, NONE
@@ -140,7 +140,7 @@ public class BatchAccumulator<T> implements Closeable {
             long lastOffset = nextOffset + records.size() - 1;
             maybeCompleteDrain();
 
-            BatchBuilder<T> batch = null;
+            org.apache.kafka.raft.internals.BatchBuilder<T> batch = null;
             batch = maybeAllocateBatch(records, serializationCache);
             if (batch == null) {
                 throw new BufferAllocationException("Append failed because we failed to allocate memory to write the batch");
@@ -172,7 +172,7 @@ public class BatchAccumulator<T> implements Closeable {
         }
     }
 
-    private BatchBuilder<T> maybeAllocateBatch(
+    private org.apache.kafka.raft.internals.BatchBuilder<T> maybeAllocateBatch(
         Collection<T> records,
         ObjectSerializationCache serializationCache
     ) {
@@ -423,7 +423,7 @@ public class BatchAccumulator<T> implements Closeable {
     private void startNewBatch() {
         ByteBuffer buffer = memoryPool.tryAllocate(maxBatchSize);
         if (buffer != null) {
-            currentBatch = new BatchBuilder<>(
+            currentBatch = new org.apache.kafka.raft.internals.BatchBuilder<>(
                 buffer,
                 serde,
                 compression,
@@ -576,7 +576,7 @@ public class BatchAccumulator<T> implements Closeable {
             this.pool = pool;
             this.initialBuffer = initialBuffer;
 
-            validateContruction();
+            validateConstruction();
         }
 
         private CompletedBatch(
@@ -593,10 +593,10 @@ public class BatchAccumulator<T> implements Closeable {
             this.pool = pool;
             this.initialBuffer = initialBuffer;
 
-            validateContruction();
+            validateConstruction();
         }
 
-        private void validateContruction() {
+        private void validateConstruction() {
             Objects.requireNonNull(data.firstBatch(), "Expected memory records to contain one batch");
 
             if (numRecords <= 0) {

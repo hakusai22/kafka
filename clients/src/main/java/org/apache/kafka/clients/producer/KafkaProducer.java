@@ -1717,20 +1717,38 @@ public class KafkaProducer<K, V> implements Producer<K, V> {
         private volatile TopicPartition topicPartition;
         private final Headers headers;
 
+        /**
+         * AppendCallbacks构造函数
+         * @param userCallback 用户自定义的回调函数
+         * @param interceptors 生产者拦截器
+         * @param record 待发送的消息记录
+         */
         private AppendCallbacks(Callback userCallback, ProducerInterceptors<K, V> interceptors, ProducerRecord<K, V> record) {
+            // 保存用户自定义的回调函数
             this.userCallback = userCallback;
+            // 保存生产者拦截器
             this.interceptors = interceptors;
             // Extract record info as we don't want to keep a reference to the record during
             // whole lifetime of the batch.
             // We don't want to have an NPE here, because the interceptors would not be notified (see .doSend).
+            
+            // 从record中提取topic,如果record为空则设为null
             topic = record != null ? record.topic() : null;
+            
+            // 处理消息头部信息
             if (record != null) {
+                // 如果record不为空,获取其headers
                 headers = record.headers();
             } else {
+                // 如果record为空,创建一个新的只读的RecordHeaders
                 headers = new RecordHeaders();
                 ((RecordHeaders) headers).setReadOnly();
             }
+            
+            // 从record中提取分区信息,如果record为空则设为null
             recordPartition = record != null ? record.partition() : null;
+            
+            // 如果启用了trace日志且record不为空,则保存record的字符串表示,否则为空字符串
             recordLogString = log.isTraceEnabled() && record != null ? record.toString() : "";
         }
 

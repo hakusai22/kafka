@@ -253,23 +253,23 @@ public class RecordAccumulator {
 
         return false;
     }
+
     /**
-     * Add a record to the accumulator, return the append result
+     * 将一条记录添加到累加器中,返回追加结果
      * <p>
-     * The append result will contain the future metadata, and flag for whether the appended batch is full or a new batch is created
+     * 追加结果包含未来的元数据,以及标识追加的批次是否已满或是否创建了新批次的标志
      * <p>
-     *
-     * @param topic The topic to which this record is being sent
-     * @param partition The partition to which this record is being sent or RecordMetadata.UNKNOWN_PARTITION
-     *                  if any partition could be used
-     * @param timestamp The timestamp of the record
-     * @param key The key for the record
-     * @param value The value for the record
-     * @param headers the Headers for the record
-     * @param callbacks The callbacks to execute
-     * @param maxTimeToBlock The maximum time in milliseconds to block for buffer memory to be available
-     * @param nowMs The current time, in milliseconds
-     * @param cluster The cluster metadata
+     * 
+     * @param topic 记录要发送到的主题
+     * @param partition 记录要发送到的分区,如果可以使用任意分区则为RecordMetadata.UNKNOWN_PARTITION
+     * @param timestamp 记录的时间戳
+     * @param key 记录的key
+     * @param value 记录的value
+     * @param headers 记录的headers
+     * @param callbacks 要执行的回调函数
+     * @param maxTimeToBlock 等待缓冲区内存可用的最大阻塞时间(毫秒)
+     * @param nowMs 当前时间(毫秒)
+     * @param cluster 集群元数据
      */
     public RecordAppendResult append(String topic,
                                      int partition,
@@ -942,24 +942,27 @@ public class RecordAccumulator {
     }
 
     /**
-     * Drain all the data for the given nodes and collate them into a list of batches that will fit
-     * within the specified size on a per-node basis. This method attempts to avoid choosing the same
-     * topic-node over and over.
+     * 从给定节点排空所有数据,并将它们整理成一个批次列表,每个节点的批次大小都在指定大小范围内。
+     * 该方法会尽量避免重复选择相同的主题-节点。
      *
-     * @param metadataSnapshot  The current cluster metadata
-     * @param nodes             The list of node to drain
-     * @param maxSize           The maximum number of bytes to drain
-     * @param now               The current unix time in milliseconds
-     * @return A list of {@link ProducerBatch} for each node specified with total size less than the
-     * requested maxSize.
+     * @param metadataSnapshot  当前集群元数据
+     * @param nodes             需要排空数据的节点列表
+     * @param maxSize           每个节点最大可排空的字节数
+     * @param now               当前Unix时间戳(毫秒)
+     * @return 返回每个指定节点的ProducerBatch列表,每个节点的批次总大小小于请求的maxSize
      */
     public Map<Integer, List<ProducerBatch>> drain(MetadataSnapshot metadataSnapshot, Set<Node> nodes, int maxSize, long now) {
+        // 如果节点列表为空,直接返回空Map
         if (nodes.isEmpty())
             return Collections.emptyMap();
 
+        // 创建结果Map,key为节点ID,value为该节点的批次列表
         Map<Integer, List<ProducerBatch>> batches = new HashMap<>();
+        // 遍历每个节点
         for (Node node : nodes) {
+            // 获取该节点可发送的批次列表
             List<ProducerBatch> ready = drainBatchesForOneNode(metadataSnapshot, node, maxSize, now);
+            // 将节点ID和批次列表放入结果Map
             batches.put(node.id(), ready);
         }
         return batches;
@@ -1238,10 +1241,15 @@ public class RecordAccumulator {
     }
 
     /**
-     * Per topic info.
+     * 每个主题的信息
+     * 包含:
+     * 1. batches: 该主题下每个分区的消息批次队列
+     * 2. builtInPartitioner: 该主题的内置分区器
      */
     private static class TopicInfo {
+        // 存储每个分区的消息批次队列,key为分区号,value为该分区的消息批次队列
         public final ConcurrentMap<Integer /*partition*/, Deque<ProducerBatch>> batches = new CopyOnWriteMap<>();
+        // 该主题的内置分区器,用于确定消息应该发送到哪个分区
         public final BuiltInPartitioner builtInPartitioner;
 
         public TopicInfo(BuiltInPartitioner builtInPartitioner) {

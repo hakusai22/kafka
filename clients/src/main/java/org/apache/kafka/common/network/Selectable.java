@@ -67,9 +67,9 @@ public interface Selectable {
     void send(NetworkSend send);
 
     /**
-     * Do I/O. Reads, writes, connection establishment, etc.
-     * @param timeout The amount of time to block if there is nothing to do
-     * @throws IOException
+     * 执行I/O操作,包括读取、写入、建立连接等
+     * @param timeout 当没有I/O操作可执行时的阻塞时间
+     * @throws IOException 当I/O操作发生错误时抛出异常
      */
     void poll(long timeout) throws IOException;
 

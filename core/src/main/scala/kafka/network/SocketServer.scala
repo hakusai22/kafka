@@ -70,12 +70,19 @@ import scala.util.control.ControlThrowable
  *      M Handler threads that handle requests and produce responses back to the processor threads for writing.
  */
 class SocketServer(
+  // Kafka服务器配置
   val config: KafkaConfig,
+  // 指标监控系统
   val metrics: Metrics,
+  // 时间服务
   val time: Time,
+  // 凭证提供者,用于认证
   val credentialProvider: CredentialProvider,
+  // API版本管理器
   val apiVersionManager: ApiVersionManager,
+  // Socket工厂,用于创建ServerSocket,默认使用标准实现
   val socketFactory: ServerSocketFactory = ServerSocketFactory.INSTANCE,
+  // 连接断开监听器列表,默认为空
   val connectionDisconnectListeners: Seq[ConnectionDisconnectListener] = Seq.empty
 ) extends Logging with BrokerReconfigurable {
 

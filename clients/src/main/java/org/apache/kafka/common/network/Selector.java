@@ -413,47 +413,51 @@ public class Selector implements Selectable, AutoCloseable {
     }
 
     /**
-     * Do whatever I/O can be done on each connection without blocking. This includes completing connections, completing
-     * disconnections, initiating new sends, or making progress on in-progress sends or receives.
+     * 在每个连接上执行所有可以完成的非阻塞I/O操作。这包括完成连接建立、完成断开连接、
+     * 初始化新的发送操作,以及推进正在进行中的发送和接收操作。
      *
-     * When this call is completed the user can check for completed sends, receives, connections or disconnects using
-     * {@link #completedSends()}, {@link #completedReceives()}, {@link #connected()}, {@link #disconnected()}. These
-     * lists will be cleared at the beginning of each `poll` call and repopulated by the call if there is
-     * any completed I/O.
+     * 当这个调用完成后,用户可以通过以下方法检查已完成的操作:
+     * {@link #completedSends()} - 已完成的发送
+     * {@link #completedReceives()} - 已完成的接收  
+     * {@link #connected()} - 已建立的连接
+     * {@link #disconnected()} - 已断开的连接
+     * 这些列表会在每次 `poll` 调用开始时被清空,如果有完成的I/O操作则会重新填充。
      *
-     * In the "Plaintext" setting, we are using socketChannel to read & write to the network. But for the "SSL" setting,
-     * we encrypt the data before we use socketChannel to write data to the network, and decrypt before we return the responses.
-     * This requires additional buffers to be maintained as we are reading from network, since the data on the wire is encrypted
-     * we won't be able to read exact no.of bytes as kafka protocol requires. We read as many bytes as we can, up to SSLEngine's
-     * application buffer size. This means we might be reading additional bytes than the requested size.
-     * If there is no further data to read from socketChannel selector won't invoke that channel and we have additional bytes
-     * in the buffer. To overcome this issue we added "keysWithBufferedRead" map which tracks channels which have data in the SSL
-     * buffers. If there are channels with buffered data that can by processed, we set "timeout" to 0 and process the data even
-     * if there is no more data to read from the socket.
+     * 在"明文"模式下,我们使用socketChannel直接读写网络数据。但在"SSL"模式下,
+     * 我们需要在写入网络之前加密数据,在返回响应之前解密数据。
+     * 这需要维护额外的缓冲区,因为加密数据在网络上传输时,我们无法精确读取Kafka协议要求的字节数。
+     * 我们会尽可能多地读取数据,最多读取到SSLEngine的应用缓冲区大小。这意味着我们可能会读取超过请求大小的字节数。
+     * 如果socketChannel没有更多数据可读,selector就不会触发该channel,但缓冲区中可能还有额外的字节。
+     * 为了解决这个问题,我们添加了"keysWithBufferedRead"映射来跟踪在SSL缓冲区中还有数据的channel。
+     * 如果有channel带有可以处理的缓冲数据,我们会将"timeout"设为0并处理这些数据,即使socket上没有更多数据可读。
      *
-     * At most one entry is added to "completedReceives" for a channel in each poll. This is necessary to guarantee that
-     * requests from a channel are processed on the broker in the order they are sent. Since outstanding requests added
-     * by SocketServer to the request queue may be processed by different request handler threads, requests on each
-     * channel must be processed one-at-a-time to guarantee ordering.
+     * 在每次poll中,每个channel最多只会向"completedReceives"添加一个条目。这是必要的,
+     * 为了保证来自channel的请求按发送顺序在broker上处理。因为SocketServer添加到请求队列的未完成请求
+     * 可能会被不同的请求处理线程处理,所以每个channel的请求必须一次处理一个以保证顺序。
      *
-     * @param timeout The amount of time to wait, in milliseconds, which must be non-negative
-     * @throws IllegalArgumentException If `timeout` is negative
-     * @throws IllegalStateException If a send is given for which we have no existing connection or for which there is
-     *         already an in-progress send
+     * @param timeout 等待的时间(毫秒),必须是非负数
+     * @throws IllegalArgumentException 如果 `timeout` 为负数
+     * @throws IllegalStateException 如果发送的目标连接不存在,或者已经有一个正在进行的发送
      */
     @Override
     public void poll(long timeout) throws IOException {
+        // 检查超时参数是否合法
         if (timeout < 0)
             throw new IllegalArgumentException("timeout should be >= 0");
 
+        // 保存上一次poll是否有读取进度
         boolean madeReadProgressLastCall = madeReadProgressLastPoll;
+        // 清除上一次poll的结果
         clear();
 
+        // 检查是否有缓冲的数据需要处理
         boolean dataInBuffers = !keysWithBufferedRead.isEmpty();
 
+        // 如果有立即连接的channel或者上次有读取进度且有缓冲数据,则不等待直接进行poll
         if (!immediatelyConnectedKeys.isEmpty() || (madeReadProgressLastCall && dataInBuffers))
             timeout = 0;
 
+        // 如果内存压力已经恢复,则解除被静音的channel
         if (!memoryPool.isOutOfMemory() && outOfMemory) {
             //we have recovered from memory pressure. unmute any channel not explicitly muted for other reasons
             log.trace("Broker no longer low on memory - unmuting incoming sockets");
@@ -466,56 +470,80 @@ public class Selector implements Selectable, AutoCloseable {
         }
 
         /* check ready keys */
+        // 记录select开始时间
         long startSelect = time.nanoseconds();
+        // 执行select操作,获取就绪的channel数量
         int numReadyKeys = select(timeout);
+        // 记录select结束时间
         long endSelect = time.nanoseconds();
+        // 记录select耗时
         this.sensors.selectTime.record(endSelect - startSelect, time.milliseconds(), false);
 
+        // 如果有就绪的channel或立即连接的channel或缓冲数据,则进行处理
         if (numReadyKeys > 0 || !immediatelyConnectedKeys.isEmpty() || dataInBuffers) {
+            // 获取所有就绪的SelectionKey
             Set<SelectionKey> readyKeys = this.nioSelector.selectedKeys();
 
-            // Poll from channels that have buffered data (but nothing more from the underlying socket)
+            // 处理有缓冲数据的channel
             if (dataInBuffers) {
-                keysWithBufferedRead.removeAll(readyKeys); //so no channel gets polled twice
+                // 移除已经在readyKeys中的channel,避免重复处理
+                keysWithBufferedRead.removeAll(readyKeys); 
                 Set<SelectionKey> toPoll = keysWithBufferedRead;
-                keysWithBufferedRead = new HashSet<>(); //poll() calls will repopulate if needed
+                // 重置keysWithBufferedRead,后续poll会重新填充
+                keysWithBufferedRead = new HashSet<>(); 
+                // 处理有缓冲数据的channel
                 pollSelectionKeys(toPoll, false, endSelect);
             }
 
-            // Poll from channels where the underlying socket has more data
+            // 处理socket有新数据的channel
             pollSelectionKeys(readyKeys, false, endSelect);
-            // Clear all selected keys so that they are excluded from the ready count for the next select
+            // 清除已处理的SelectionKey,为下次select做准备
             readyKeys.clear();
 
+            // 处理立即连接的channel
             pollSelectionKeys(immediatelyConnectedKeys, true, endSelect);
+            // 清除已处理的立即连接channel
             immediatelyConnectedKeys.clear();
         } else {
-            madeReadProgressLastPoll = true; //no work is also "progress"
+            // 没有工作也算是一种进度
+            madeReadProgressLastPoll = true; 
         }
 
+        // 记录整个IO操作的结束时间
         long endIo = time.nanoseconds();
+        // 记录IO操作耗时
         this.sensors.ioTime.record(endIo - endSelect, time.milliseconds(), false);
 
-        // Close channels that were delayed and are now ready to be closed
+        // 关闭延迟关闭且现在可以关闭的channel
         completeDelayedChannelClose(endIo);
 
-        // we use the time at the end of select to ensure that we don't close any connections that
-        // have just been processed in pollSelectionKeys
+        // 使用select结束时的时间来检查是否需要关闭最老的连接
+        // 这样可以确保不会关闭刚刚在pollSelectionKeys中处理过的连接
         maybeCloseOldestConnection(endSelect);
     }
 
     /**
-     * handle any ready I/O on a set of selection keys
-     * @param selectionKeys set of keys to handle
-     * @param isImmediatelyConnected true if running over a set of keys for just-connected sockets
-     * @param currentTimeNanos time at which set of keys was determined
+     * 处理一组SelectionKey上准备就绪的I/O操作
+     * 
+     * @param selectionKeys 要处理的SelectionKey集合
+     * @param isImmediatelyConnected 如果是处理刚刚建立连接的socket则为true
+     * @param currentTimeNanos 确定SelectionKey集合时的时间戳(纳秒)
      */
-    // package-private for testing
+    // 包级私有,用于测试
+    /**
+     * 处理选择键集合中的I/O事件
+     * 
+     * @param selectionKeys 要处理的SelectionKey集合
+     * @param isImmediatelyConnected 是否立即连接完成
+     * @param currentTimeNanos 当前时间(纳秒)
+     */
     void pollSelectionKeys(Set<SelectionKey> selectionKeys,
                            boolean isImmediatelyConnected,
                            long currentTimeNanos) {
+        // 遍历所有SelectionKey,按确定的顺序处理
         for (SelectionKey key : determineHandlingOrder(selectionKeys)) {
             KafkaChannel channel = channel(key);
+            // 记录每个连接的处理开始时间
             long channelStartTimeNanos = recordTimePerConnection ? time.nanoseconds() : 0;
             boolean sendFailed = false;
             String nodeId = channel.id();
@@ -593,7 +621,6 @@ public class Selector implements Selectable, AutoCloseable {
                 }
 
                 /* if channel is ready write to any sockets that have space in their buffer and for which we have data */
-
                 long nowNanos = channelStartTimeNanos != 0 ? channelStartTimeNanos : currentTimeNanos;
                 try {
                     attemptWrite(key, channel, nowNanos);

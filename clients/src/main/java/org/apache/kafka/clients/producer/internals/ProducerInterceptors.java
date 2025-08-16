@@ -47,47 +47,55 @@ public class ProducerInterceptors<K, V> implements Closeable {
     }
 
     /**
-     * This is called when client sends the record to KafkaProducer, before key and value gets serialized.
-     * The method calls {@link ProducerInterceptor#onSend(ProducerRecord)} method. ProducerRecord
-     * returned from the first interceptor's onSend() is passed to the second interceptor onSend(), and so on in the
-     * interceptor chain. The record returned from the last interceptor is returned from this method.
+     * 当客户端向KafkaProducer发送记录时调用此方法,在key和value序列化之前执行
+     * 该方法会调用{@link ProducerInterceptor#onSend(ProducerRecord)}方法。第一个拦截器的onSend()返回的ProducerRecord
+     * 会传递给第二个拦截器的onSend()方法,以此类推形成拦截器链。最后一个拦截器返回的记录将作为此方法的返回值。
+     * 
+     * 此方法不会抛出异常。任何拦截器方法抛出的异常都会被捕获并忽略。
+     * 如果拦截器链中间的某个拦截器(通常会修改记录)抛出异常,
+     * 链中的下一个拦截器将使用上一个没有抛出异常的拦截器返回的记录继续执行。
      *
-     * This method does not throw exceptions. Exceptions thrown by any of interceptor methods are caught and ignored.
-     * If an interceptor in the middle of the chain, that normally modifies the record, throws an exception,
-     * the next interceptor in the chain will be called with a record returned by the previous interceptor that did not
-     * throw an exception.
-     *
-     * @param record the record from client
-     * @return producer record to send to topic/partition
+     * @param record 来自客户端的记录
+     * @return 要发送到topic/partition的生产者记录
      */
     public ProducerRecord<K, V> onSend(ProducerRecord<K, V> record) {
+        // 保存原始记录,用于拦截器链的处理
         ProducerRecord<K, V> interceptRecord = record;
+        
+        // 遍历所有注册的拦截器插件
         for (Plugin<ProducerInterceptor<K, V>> interceptorPlugin : this.interceptorPlugins) {
             try {
+                // 调用当前拦截器的onSend方法,处理记录
+                // 每个拦截器可以修改记录内容,修改后的记录会传给下一个拦截器
                 interceptRecord = interceptorPlugin.get().onSend(interceptRecord);
             } catch (Exception e) {
-                // do not propagate interceptor exception, log and continue calling other interceptors
-                // be careful not to throw exception from here
-                if (record != null)
-                    log.warn("Error executing interceptor onSend callback for topic: {}, partition: {}", record.topic(), record.partition(), e);
-                else
+                // 捕获拦截器可能抛出的异常
+                // 不向上传播异常,只记录日志并继续调用其他拦截器
+                if (record != null) {
+                    // 如果原始记录不为空,记录主题和分区信息
+                    log.warn("Error executing interceptor onSend callback for topic: {}, partition: {}", 
+                            record.topic(), record.partition(), e);
+                } else {
+                    // 原始记录为空时的日志记录
                     log.warn("Error executing interceptor onSend callback", e);
+                }
             }
         }
+        
+        // 返回经过所有拦截器处理后的记录
         return interceptRecord;
     }
 
     /**
-     * This method is called when the record sent to the server has been acknowledged, or when sending the record fails before
-     * it gets sent to the server. This method calls {@link ProducerInterceptor#onAcknowledgement(RecordMetadata, Exception, Headers)}
-     * method for each interceptor.
+     * 当记录发送到服务器并得到确认时,或在记录发送到服务器之前发送失败时调用此方法。
+     * 此方法会为每个拦截器调用{@link ProducerInterceptor#onAcknowledgement(RecordMetadata, Exception, Headers)}方法。
      *
-     * This method does not throw exceptions. Exceptions thrown by any of interceptor methods are caught and ignored.
+     * 此方法不会抛出异常。任何拦截器方法抛出的异常都会被捕获并忽略。
      *
-     * @param metadata The metadata for the record that was sent (i.e. the partition and offset).
-     *                 If an error occurred, metadata will only contain valid topic and maybe partition.
-     * @param exception The exception thrown during processing of this record. Null if no error occurred.
-     * @param headers The headers for the record that was sent
+     * @param metadata 已发送记录的元数据(即分区和偏移量)。
+     *                如果发生错误,元数据将只包含有效的主题,可能还包含分区信息。
+     * @param exception 处理此记录期间抛出的异常。如果没有发生错误则为null。
+     * @param headers 已发送记录的头部信息
      */
     public void onAcknowledgement(RecordMetadata metadata, Exception exception, Headers headers) {
         for (Plugin<ProducerInterceptor<K, V>> interceptorPlugin : this.interceptorPlugins) {
@@ -101,37 +109,45 @@ public class ProducerInterceptors<K, V> implements Closeable {
     }
 
     /**
-     * This method is called when sending the record fails in {@link ProducerInterceptor#onSend
-     * (ProducerRecord)} method. This method calls {@link ProducerInterceptor#onAcknowledgement(RecordMetadata, Exception, Headers)}
-     * method for each interceptor
+     * 当记录在{@link ProducerInterceptor#onSend(ProducerRecord)}方法中发送失败时调用此方法。
+     * 此方法会为每个拦截器调用{@link ProducerInterceptor#onAcknowledgement(RecordMetadata, Exception, Headers)}方法。
      *
-     * @param record The record from client
-     * @param interceptTopicPartition  The topic/partition for the record if an error occurred
-     *        after partition gets assigned; the topic part of interceptTopicPartition is the same as in record.
-     * @param exception The exception thrown during processing of this record.
+     * @param record 来自客户端的记录
+     * @param interceptTopicPartition 如果在分区分配后发生错误,则为记录的主题/分区;
+     *                               interceptTopicPartition的主题部分与record中的相同
+     * @param exception 处理此记录期间抛出的异常
      */
     public void onSendError(ProducerRecord<K, V> record, TopicPartition interceptTopicPartition, Exception exception) {
+        // 遍历所有注册的拦截器插件
         for (Plugin<ProducerInterceptor<K, V>> interceptorPlugin : this.interceptorPlugins) {
             try {
+                // 获取记录头部信息,如果记录为空则创建新的头部
                 Headers headers = record != null ? record.headers() : new RecordHeaders();
+                
+                // 如果头部是可写的RecordHeaders类型,创建只读副本
                 if (headers instanceof RecordHeaders && !((RecordHeaders) headers).isReadOnly()) {
-                    // make a copy of the headers to make sure we don't change the state of origin record's headers.
-                    // original headers are still writable because client might want to mutate them before retrying.
+                    // 创建头部副本以确保不会改变原始记录头部的状态
+                    // 保持原始头部可写,因为客户端可能在重试前需要修改它们
                     RecordHeaders recordHeaders = (RecordHeaders) headers;
                     headers = new RecordHeaders(recordHeaders);
                     ((RecordHeaders) headers).setReadOnly();
                 }
+
+                // 根据记录和主题分区的状态调用不同的onAcknowledgement处理逻辑
                 if (record == null && interceptTopicPartition == null) {
+                    // 如果记录和主题分区都为空,传递null元数据
                     interceptorPlugin.get().onAcknowledgement(null, exception, headers);
                 } else {
+                    // 如果主题分区为空但记录不为空,从记录中提取主题分区信息
                     if (interceptTopicPartition == null) {
                         interceptTopicPartition = extractTopicPartition(record);
                     }
+                    // 创建包含错误信息的记录元数据(-1表示无效值)
                     interceptorPlugin.get().onAcknowledgement(new RecordMetadata(interceptTopicPartition, -1, -1,
                                     RecordBatch.NO_TIMESTAMP, -1, -1), exception, headers);
                 }
             } catch (Exception e) {
-                // do not propagate interceptor exceptions, just log
+                // 捕获拦截器异常但不向上传播,只记录警告日志
                 log.warn("Error executing interceptor onAcknowledgement callback", e);
             }
         }
@@ -142,7 +158,11 @@ public class ProducerInterceptors<K, V> implements Closeable {
     }
 
     /**
-     * Closes every interceptor in a container.
+     * 关闭容器中的所有拦截器。
+     * 
+     * 该方法会遍历所有注册的拦截器插件,依次调用它们的close()方法进行关闭。
+     * 如果某个拦截器关闭过程中抛出异常,会被捕获并记录错误日志,但不会影响其他拦截器的关闭。
+     * 这样可以确保所有拦截器都有机会执行清理工作,即使部分拦截器关闭失败。
      */
     @Override
     public void close() {

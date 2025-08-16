@@ -38,14 +38,14 @@ import java.util.{Optional, OptionalInt}
 import scala.jdk.CollectionConverters._
 
 /**
- * This class implements the KRaft (Kafka Raft) mode server which relies
- * on a KRaft quorum for maintaining cluster metadata. It is responsible for
- * constructing the controller and/or broker based on the `process.roles`
- * configuration and for managing their basic lifecycle (startup and shutdown).
- *
+ * KRaft(Kafka Raft)模式服务器的实现类,该服务器依赖KRaft仲裁机制来维护集群元数据。
+ * 主要负责基于process.roles配置构建Controller和/或Broker组件,
+ * 并管理这些组件的基本生命周期(启动和关闭)。
  */
 class KafkaRaftServer(
+  // Kafka服务器配置
   config: KafkaConfig,
+  // 时间工具类
   time: Time,
 ) extends Server with Logging {
 
@@ -88,12 +88,17 @@ class KafkaRaftServer(
   }
 
   override def startup(): Unit = {
+    // 加载MX4J JMX工具包(如果配置了的话)
     Mx4jLoader.maybeLoad()
     // Controller component must be started before the broker component so that
     // the controller endpoints are passed to the KRaft manager
+    // 启动Controller组件(如果存在)
     controller.foreach(_.startup())
+    // 启动Broker组件(如果存在) 
     broker.foreach(_.startup())
+    // 注册应用信息到JMX
     AppInfoParser.registerAppInfo(Server.MetricsPrefix, config.brokerId.toString, metrics, time.milliseconds())
+    // 打印启动完成日志
     info(KafkaBroker.STARTED_MESSAGE)
   }
 

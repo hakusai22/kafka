@@ -57,28 +57,47 @@ import static org.apache.kafka.common.record.RecordBatch.NO_TIMESTAMP;
  *
  * This class is not thread safe and external synchronization must be used when modifying it
  */
+/**
+ * 生产者批次类,用于管理一批待发送的消息记录
+ */
 public final class ProducerBatch {
 
     private static final Logger log = LoggerFactory.getLogger(ProducerBatch.class);
 
+    // 批次的最终状态枚举
     private enum FinalState { ABORTED, FAILED, SUCCEEDED }
 
+    // 批次创建时间
     final long createdMs;
+    // 目标主题分区
     final TopicPartition topicPartition;
+    // 生产请求的结果Future
     final ProduceRequestResult produceFuture;
 
+    // 存储回调函数和对应的Future
     private final List<Thunk> thunks = new ArrayList<>();
+    // 内存记录构建器
     private final MemoryRecordsBuilder recordsBuilder;
+    // 重试次数计数器
     private final AtomicInteger attempts = new AtomicInteger(0);
+    // 是否为拆分后的批次
     private final boolean isSplitBatch;
+    // 批次的最终状态
     private final AtomicReference<FinalState> finalState = new AtomicReference<>(null);
 
+    // 记录数量
     int recordCount;
+    // 最大记录大小
     int maxRecordSize;
+    // 上次尝试发送时间
     private long lastAttemptMs;
+    // 上次追加记录时间
     private long lastAppendTime;
+    // 批次被排空的时间
     private long drainedMs;
+    // 是否处于重试状态
     private boolean retry;
+    // 是否重新打开
     private boolean reopened;
 
     // Tracks the current-leader's epoch to which this batch would be sent, in the current to produce the batch.
